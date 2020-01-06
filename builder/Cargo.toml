@@ -16,4 +16,6 @@ path = "tests/progress.rs"
 trybuild = "1.0"
 
 [dependencies]
-# TODO
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "1", features=["derive"]}
