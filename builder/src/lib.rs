@@ -23,16 +23,19 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
     if let Data::Struct(data_struct) = data {
         let mut builder_field_types : Vec<&Type> = Vec::new();
         let mut builder_field_idents: Vec<&Ident> = Vec::new();
+        let mut builder_field_not_set_errors: Vec<String> = Vec::new();
 
         if let Fields::Named(named_fields) = &data_struct.fields {
             named_fields.named.iter()
                 .for_each(|f|{
                     if let Some(ident) = &f.ident {
                         builder_field_idents.push(ident);
-                        builder_field_types.push(&f.ty);   
+                        builder_field_types.push(&f.ty);
+                        builder_field_not_set_errors.push(ident.to_string());
                     }
                 });
         }
+
         quote!{
             pub struct #builder_ident {
                 #(#builder_field_idents : Option<#builder_field_types>,)*
@@ -50,10 +53,18 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
                     self
                 })*
 
-                pub fn build(self) -> Result<#ident, Box<dyn Error>> {
-                    #(<self.#builder_field_idents>::is_none() {
-                        return format!("{} is not set", #builder_field_idents);
+                pub fn build(&self) -> Result<#ident, Box<dyn std::error::Error>> {
+                    #(if self.#builder_field_idents.is_none() {
+                        return Err(String::from(#builder_field_not_set_errors).into());
                     })*
+
+                    if let (#(Some(#builder_field_idents)),*) = (#(self.#builder_field_idents.clone()),*) {
+                        Ok(#ident{
+                            #(#builder_field_idents : #builder_field_idents,)*
+                        })
+                    } else {
+                        unreachable!()
+                    }
                 }
             }
         }
@@ -73,6 +84,18 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
         }
     }
 }
+
+// if let (#(Some(#builder_field_idents)),*) = (#(self.#builder_field_idents),*) {
+//     Ok(#ident{
+//         #(#builder_field_idents : #builder_field_idents,)*
+//     })
+// } else {
+//     unreachable!()
+// }
+
+// Ok(#ident{
+//     #(#builder_field_idents : #builder_field_idents,)*
+// })
 
 // fn add_field_setters(data : &Data) -> TokenStream {
 //     if let Data::Struct(struct_data) = data {
