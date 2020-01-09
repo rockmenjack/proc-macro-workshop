@@ -31,7 +31,7 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
                     if let Some(ident) = &f.ident {
                         builder_field_idents.push(ident);
                         builder_field_types.push(&f.ty);
-                        builder_field_not_set_errors.push(ident.to_string());
+                        builder_field_not_set_errors.push(format!("{} is required", ident.to_string()));
                     }
                 });
         }
@@ -54,17 +54,9 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
                 })*
 
                 pub fn build(&self) -> Result<#ident, Box<dyn std::error::Error>> {
-                    #(if self.#builder_field_idents.is_none() {
-                        return Err(String::from(#builder_field_not_set_errors).into());
-                    })*
-
-                    if let (#(Some(#builder_field_idents)),*) = (#(self.#builder_field_idents.clone()),*) {
-                        Ok(#ident{
-                            #(#builder_field_idents : #builder_field_idents,)*
-                        })
-                    } else {
-                        unreachable!()
-                    }
+                    Ok(#ident{
+                        #(#builder_field_idents : self.#builder_field_idents.clone().ok_or(String::from(#builder_field_not_set_errors))?),*
+                    })
                 }
             }
         }
