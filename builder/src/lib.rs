@@ -3,7 +3,8 @@ extern crate proc_macro;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote,quote_spanned};
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Type};
+use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Field, Type, Type::{Path, Verbatim}, GenericArgument};
+use syn::PathArguments::{AngleBracketed};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -15,6 +16,48 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     };
     eprintln!("TOKENS: {}", expanded);
     expanded.into()
+}
+
+enum FieldKind<'a> {
+    Mandatory(&'a Ident, &'a Type, String),
+    Optional(&'a Ident, &'a Type), // wraps inner type
+}
+
+fn parse_field_kind(field : &Field) -> Option<FieldKind> {
+    match &field.ty {
+        Path(type_path) => {
+            if type_path.path.segments.len() == 3 {
+                let segments : Vec<_>  = type_path.path.segments.iter().take(3).collect();
+                match segments.as_slice() {
+                    [first, second, third] => {
+                        if first.ident.to_string() == "std" 
+                           && second.ident.to_string() == "option"
+                           && third.ident.to_string() == "Option" {
+                            if let AngleBracketed(arguments) = &third.arguments {
+                                if let Some(GenericArgument::Type(ty)) = arguments.args.first() {
+                                    if let Some(ident) = &field.ident {
+                                        return Some(FieldKind::Optional(ident, ty))
+                                    }
+                                }
+                            }
+                        }
+                        return None;
+                    },
+                    _ => return None,
+                }
+            }
+            return None;
+        },
+        Verbatim(_) => {},
+        _ => {
+            if let Some(ident) = &field.ident {
+                let err_text = format!("{} is required", ident.to_string());
+                return Some(FieldKind::Mandatory(ident, &field.ty, err_text));
+            }
+        },
+    }
+
+    return None;
 }
 
 fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
