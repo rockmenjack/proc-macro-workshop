@@ -60,6 +60,7 @@ pub struct Command {
     args: Vec<String>,
     env: Vec<String>,
     current_dir: Option<String>,
+    long_options: std::option::Option<String>,
 }
 
 fn main() {

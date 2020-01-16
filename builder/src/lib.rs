@@ -26,79 +26,103 @@ enum FieldKind<'a> {
 fn parse_field_kind(field : &Field) -> Option<FieldKind> {
     match &field.ty {
         Path(type_path) => {
-            if type_path.path.segments.len() == 3 {
-                let segments : Vec<_>  = type_path.path.segments.iter().take(3).collect();
-                match segments.as_slice() {
-                    [first, second, third] => {
-                        if first.ident.to_string() == "std" 
-                           && second.ident.to_string() == "option"
-                           && third.ident.to_string() == "Option" {
-                            if let AngleBracketed(arguments) = &third.arguments {
-                                if let Some(GenericArgument::Type(ty)) = arguments.args.first() {
-                                    if let Some(ident) = &field.ident {
-                                        return Some(FieldKind::Optional(ident, ty))
-                                    }
+            let segments : Vec<_>  = type_path.path.segments.iter().take(3).collect();
+            eprintln!("!!!: {}", quote!{#(#segments)*});
+            match segments.as_slice() {
+                [first, second, third] => {
+                    if first.ident.to_string() == "std" 
+                        && second.ident.to_string() == "option"
+                        && third.ident.to_string() == "Option" {
+                        if let AngleBracketed(arguments) = &third.arguments {
+                            if let Some(GenericArgument::Type(ty)) = arguments.args.first() {
+                                
+                                if let Some(ident) = &field.ident {
+                                    return Some(FieldKind::Optional(ident, ty))
                                 }
                             }
                         }
-                        return None;
-                    },
-                    _ => return None,
+                    }
+                    return None;
+                },
+                _ => {
+                    if let Some(ident) = &field.ident {
+                        if ident.to_string() == "Option" {
+                            return Some()
+                        } else {
+                            return Some(FieldKind::Mandatory(ident, &field.ty, format!("{} must be set", ident.to_string()));
+                        }
+                    }
                 }
             }
+
             return None;
         },
-        Verbatim(_) => {},
         _ => {
-            if let Some(ident) = &field.ident {
-                let err_text = format!("{} is required", ident.to_string());
-                return Some(FieldKind::Mandatory(ident, &field.ty, err_text));
-            }
+            return None;
         },
     }
-
-    return None;
 }
 
 fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
     let builder_ident = format_ident!{"{}Builder", ident};
 
     if let Data::Struct(data_struct) = data {
-        let mut builder_field_types : Vec<&Type> = Vec::new();
-        let mut builder_field_idents: Vec<&Ident> = Vec::new();
-        let mut builder_field_not_set_errors: Vec<String> = Vec::new();
+        let mut builder_mandatory_field_types : Vec<&Type> = Vec::new();
+        let mut builder_mandatory_field_idents: Vec<&Ident> = Vec::new();
+        let mut builder_mandatory_field_not_set_errors: Vec<String> = Vec::new();
+
+        let mut builder_optional_field_inner_types : Vec<&Type> = Vec::new();
+        let mut builder_optional_field_idents: Vec<&Ident> = Vec::new();
 
         if let Fields::Named(named_fields) = &data_struct.fields {
             named_fields.named.iter()
                 .for_each(|f|{
-                    if let Some(ident) = &f.ident {
-                        builder_field_idents.push(ident);
-                        builder_field_types.push(&f.ty);
-                        builder_field_not_set_errors.push(format!("{} is required", ident.to_string()));
+                    if let Some(field_kind) = parse_field_kind(&f) {
+                        match field_kind {
+                            FieldKind::Mandatory(ident, ty, error_text) => {
+                                builder_mandatory_field_idents.push(ident);
+                                builder_mandatory_field_types.push(ty);
+                                builder_mandatory_field_not_set_errors.push(error_text);
+                            },
+                            FieldKind::Optional(ident, inner_ty) => {
+                                builder_optional_field_idents.push(ident);
+                                builder_optional_field_inner_types.push(inner_ty);
+                            },
+                        }
                     }
                 });
         }
 
         quote!{
             pub struct #builder_ident {
-                #(#builder_field_idents : Option<#builder_field_types>,)*
+                #(#builder_mandatory_field_idents : Option<#builder_mandatory_field_types>,)*
+                #(#builder_optional_field_idents : #builder_optional_field_inner_types,)*
             }
     
             impl #ident {
                 pub fn builder() -> #builder_ident {
-                    #builder_ident { #(#builder_field_idents : None),* }
+                    #builder_ident { 
+                        #(#builder_mandatory_field_idents : None),*
+                        #(#builder_optional_field_idents : None),*
+                     }
                 }
             }
 
             impl #builder_ident {
-                #(pub fn #builder_field_idents(&mut self, v : #builder_field_types) -> &mut Self {
-                    self.#builder_field_idents = Some(v);
+                #(pub fn #builder_mandatory_field_idents(&mut self, v : #builder_mandatory_field_types) -> &mut Self {
+                    self.#builder_mandatory_field_idents = Some(v);
+                    self
+                })*
+                
+                #(pub fn #builder_optional_field_idents(&mut self, v : #builder_optional_field_inner_types) -> &mut Self {
+                    self.#builder_optional_field_idents = Some(v);
                     self
                 })*
 
                 pub fn build(&self) -> Result<#ident, Box<dyn std::error::Error>> {
                     Ok(#ident{
-                        #(#builder_field_idents : self.#builder_field_idents.clone().ok_or(String::from(#builder_field_not_set_errors))?),*
+                        #(#builder_mandatory_field_idents : self.#builder_mandatory_field_idents.clone().ok_or(#builder_mandatory_field_not_set_errors)?),*
+                        #(#builder_optional_field_idents : self.#builder_optional_field_idents),*
                     })
                 }
             }
