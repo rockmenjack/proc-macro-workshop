@@ -3,7 +3,7 @@ extern crate proc_macro;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote,quote_spanned};
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Field, Type, Type::{Path, Verbatim}, GenericArgument};
+use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Field, Type, Type::{Path}, PathSegment, GenericArgument};
 use syn::PathArguments::{AngleBracketed};
 
 #[proc_macro_derive(Builder)]
@@ -23,38 +23,41 @@ enum FieldKind<'a> {
     Optional(&'a Ident, &'a Type), // wraps inner type
 }
 
-fn parse_field_kind(field : &Field) -> Option<FieldKind> {
+fn parse_field_kind<'a>(field : &'a Field) -> Option<FieldKind<'a>> {
     match &field.ty {
         Path(type_path) => {
-            let segments : Vec<_>  = type_path.path.segments.iter().take(3).collect();
-            eprintln!("!!!: {}", quote!{#(#segments)*});
-            match segments.as_slice() {
-                [first, second, third] => {
-                    if first.ident.to_string() == "std" 
-                        && second.ident.to_string() == "option"
-                        && third.ident.to_string() == "Option" {
-                        if let AngleBracketed(arguments) = &third.arguments {
-                            if let Some(GenericArgument::Type(ty)) = arguments.args.first() {
-                                
-                                if let Some(ident) = &field.ident {
-                                    return Some(FieldKind::Optional(ident, ty))
-                                }
-                            }
-                        }
-                    }
-                    return None;
-                },
-                _ => {
-                    if let Some(ident) = &field.ident {
-                        if ident.to_string() == "Option" {
-                            return Some()
-                        } else {
-                            return Some(FieldKind::Mandatory(ident, &field.ty, format!("{} must be set", ident.to_string()));
+            let segments : Vec<&PathSegment>  = type_path.path.segments.iter().take(3).collect();
+            let get_option_inner_field_kind = |segment : &'a PathSegment| {
+                if segment.ident.to_string() == "Option" {
+                    if let AngleBracketed(arguments) = &segment.arguments {
+                        if let Some(GenericArgument::Type(ty)) = arguments.args.first() {
+                            return Some(ty);
                         }
                     }
                 }
+                return None;
+            };
+
+            match segments.as_slice() {
+                [first, second, third] => {
+                    if first.ident.to_string() == "std" 
+                       && second.ident.to_string() == "option" {
+                        if let (Some(ty), Some(ident)) = (get_option_inner_field_kind(third),&field.ident) {
+                            return Some(FieldKind::Optional(ident, ty));
+                        }
+                    }
+                },
+                [first] => {
+                    if let (Some(ty), Some(ident)) = (get_option_inner_field_kind(first),&field.ident) {
+                        return Some(FieldKind::Optional(ident, ty));
+                    }
+                }
+                _ => {}
             }
 
+            if let Some(ident) = &field.ident {
+                return Some(FieldKind::Mandatory(ident, &field.ty, format!("{} must be set", ident.to_string())));
+            }
             return None;
         },
         _ => {
@@ -93,17 +96,30 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
                 });
         }
 
+        let builder_fields_def = [
+            quote!{#(#builder_mandatory_field_idents : Option<#builder_mandatory_field_types>),*},
+            quote!{#(#builder_optional_field_idents : Option<#builder_optional_field_inner_types>),*}
+        ];
+
+        let builder_create_def = [
+            quote!{#(#builder_mandatory_field_idents : None),*},
+            quote!{#(#builder_optional_field_idents : None),*},
+        ];
+
+        let builder_build_def = [
+            quote!{#(#builder_mandatory_field_idents : self.#builder_mandatory_field_idents.clone().ok_or(#builder_mandatory_field_not_set_errors)?),*},
+            quote!{#(#builder_optional_field_idents : self.#builder_optional_field_idents.clone()),*},
+        ];
+
         quote!{
             pub struct #builder_ident {
-                #(#builder_mandatory_field_idents : Option<#builder_mandatory_field_types>,)*
-                #(#builder_optional_field_idents : #builder_optional_field_inner_types,)*
+                #(#builder_fields_def),*
             }
     
             impl #ident {
                 pub fn builder() -> #builder_ident {
                     #builder_ident { 
-                        #(#builder_mandatory_field_idents : None),*
-                        #(#builder_optional_field_idents : None),*
+                        #(#builder_create_def),*
                      }
                 }
             }
@@ -121,8 +137,7 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
 
                 pub fn build(&self) -> Result<#ident, Box<dyn std::error::Error>> {
                     Ok(#ident{
-                        #(#builder_mandatory_field_idents : self.#builder_mandatory_field_idents.clone().ok_or(#builder_mandatory_field_not_set_errors)?),*
-                        #(#builder_optional_field_idents : self.#builder_optional_field_idents),*
+                        #(#builder_build_def),*                        
                     })
                 }
             }
