@@ -19,16 +19,17 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 }
 
 enum FieldKind<'a> {
-    Mandatory(&'a Ident, &'a Type, String),
-    Optional(&'a Ident, &'a Type), // wraps inner type
+    Mandatory(&'a Ident, &'a Type, String), // String: not set error text
+    Optional(&'a Ident, &'a Type), // wraps Option inner type
+    Repeated(&'a Ident, &'a Type, String), // wraps Vec inner type, String: setter function name
 }
 
 fn parse_field_kind<'a>(field : &'a Field) -> Option<FieldKind<'a>> {
     match &field.ty {
         Path(type_path) => {
             let segments : Vec<&PathSegment>  = type_path.path.segments.iter().take(3).collect();
-            let get_option_inner_field_kind = |segment : &'a PathSegment| {
-                if segment.ident.to_string() == "Option" {
+            let get_inner_field_kind = |segment : &'a PathSegment, outter : &str| {
+                if segment.ident == outter {
                     if let AngleBracketed(arguments) = &segment.arguments {
                         if let Some(GenericArgument::Type(ty)) = arguments.args.first() {
                             return Some(ty);
@@ -40,21 +41,24 @@ fn parse_field_kind<'a>(field : &'a Field) -> Option<FieldKind<'a>> {
 
             match segments.as_slice() {
                 [first, second, third] => {
-                    if first.ident.to_string() == "std" 
-                       && second.ident.to_string() == "option" {
-                        if let (Some(ty), Some(ident)) = (get_option_inner_field_kind(third),&field.ident) {
+                    if first.ident == "std" 
+                       && second.ident == "option" {
+                        if let (Some(ty), Some(ident)) = (get_inner_field_kind(third, "Option"),&field.ident) {
                             return Some(FieldKind::Optional(ident, ty));
                         }
                     }
                 },
                 [first] => {
-                    if let (Some(ty), Some(ident)) = (get_option_inner_field_kind(first),&field.ident) {
+                    if let (Some(ty), Some(ident)) = (get_inner_field_kind(first, "Option"),&field.ident) {
                         return Some(FieldKind::Optional(ident, ty));
                     }
                 }
                 _ => {}
             }
 
+            if let Some(attr) = &field.attrs.iter().find(|x|) {
+
+            }
             if let Some(ident) = &field.ident {
                 return Some(FieldKind::Mandatory(ident, &field.ty, format!("{} must be set", ident.to_string())));
             }
@@ -76,6 +80,10 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
 
         let mut builder_optional_field_inner_types : Vec<&Type> = Vec::new();
         let mut builder_optional_field_idents: Vec<&Ident> = Vec::new();
+
+        let mut builder_repeated_field_types : Vec<&Type> = Vec::new();
+        let mut builder_repeated_field_idents: Vec<&Ident> = Vec::new();
+        let mut builder_repeated_field_func_name: Vec<String> = Vec::new();
 
         if let Fields::Named(named_fields) = &data_struct.fields {
             named_fields.named.iter()
