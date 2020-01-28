@@ -3,7 +3,7 @@ extern crate proc_macro;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote,quote_spanned};
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Field, Type, Type::{Path}, PathSegment, GenericArgument};
+use syn::{parse_macro_input, DeriveInput, Ident, Data, Fields, Field, Type, Type::{Path}, PathSegment, GenericArgument, MetaNameValue, Lit};
 use syn::PathArguments::{AngleBracketed};
 
 #[proc_macro_derive(Builder)]
@@ -40,7 +40,7 @@ fn parse_field_kind<'a>(field : &'a Field) -> Option<FieldKind<'a>> {
             };
 
             match segments.as_slice() {
-                [first, second, third] => {
+                [first, second, third] => { // std::option::Option
                     if first.ident == "std" 
                        && second.ident == "option" {
                         if let (Some(ty), Some(ident)) = (get_inner_field_kind(third, "Option"),&field.ident) {
@@ -48,7 +48,7 @@ fn parse_field_kind<'a>(field : &'a Field) -> Option<FieldKind<'a>> {
                         }
                     }
                 },
-                [first] => {
+                [first] => { // Option
                     if let (Some(ty), Some(ident)) = (get_inner_field_kind(first, "Option"),&field.ident) {
                         return Some(FieldKind::Optional(ident, ty));
                     }
@@ -56,11 +56,23 @@ fn parse_field_kind<'a>(field : &'a Field) -> Option<FieldKind<'a>> {
                 _ => {}
             }
 
-            if let Some(attr) = &field.attrs.iter().find(|x|) {
-
-            }
-            if let Some(ident) = &field.ident {
-                return Some(FieldKind::Mandatory(ident, &field.ty, format!("{} must be set", ident.to_string())));
+            if let Some(attr) = &field.attrs.iter().find(|x| x.path.is_ident("builder") ) {
+                if let Ok(MetaNameValue{
+                    path: path,
+                    eq_token: _,
+                    lit: Lit::Str(lit_str),
+                }) = attr.parse_args::<MetaNameValue>() {
+                    if Some(ident) = path.get_ident() {
+                        if ident == "each" {
+                            if let (Some(ident), Some(ty)) = (path.get_ident(), get_inner_field_kind(&field.ident.first))
+                            return FieldKind::Repeated(ident, )
+                        }
+                    }
+                }
+            } else {
+                if let Some(ident) = &field.ident {
+                    return Some(FieldKind::Mandatory(ident, &field.ty, format!("{} must be set", ident.to_string())));
+                }
             }
             return None;
         },
