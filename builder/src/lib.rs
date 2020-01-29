@@ -121,32 +121,32 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
         }
 
         let builder_fields_def = [
-            quote!{#(#builder_mandatory_field_idents : Option<#builder_mandatory_field_types>),*},
-            quote!{#(#builder_optional_field_idents : Option<#builder_optional_field_inner_types>),*},
-            quote!{#(#builder_repeated_field_idents : Vec<#builder_repeated_field_inner_types>),*},
+            quote!{#(#builder_mandatory_field_idents : Option<#builder_mandatory_field_types>,)*},
+            quote!{#(#builder_optional_field_idents : Option<#builder_optional_field_inner_types>,)*},
+            quote!{#(#builder_repeated_field_idents : Vec<#builder_repeated_field_inner_types>,)*},
         ];
 
         let builder_create_def = [
-            quote!{#(#builder_mandatory_field_idents : None),*},
-            quote!{#(#builder_optional_field_idents : None),*},
-            quote!{#(#builder_repeated_field_idents : Vec::new()),*},
+            quote!{#(#builder_mandatory_field_idents : None,)*},
+            quote!{#(#builder_optional_field_idents : None,)*},
+            quote!{#(#builder_repeated_field_idents : Vec::new(),)*},
         ];
 
         let builder_build_def = [
-            quote!{#(#builder_mandatory_field_idents : self.#builder_mandatory_field_idents.clone().ok_or(#builder_mandatory_field_not_set_errors)?),*},
-            quote!{#(#builder_optional_field_idents : self.#builder_optional_field_idents.clone()),*},
-            quote!{#(#builder_repeated_field_idents : self.#builder_repeated_field_idents.clone()),*},
+            quote!{#(#builder_mandatory_field_idents : self.#builder_mandatory_field_idents.clone().ok_or(#builder_mandatory_field_not_set_errors)?,)*},
+            quote!{#(#builder_optional_field_idents : self.#builder_optional_field_idents.clone(),)*},
+            quote!{#(#builder_repeated_field_idents : self.#builder_repeated_field_idents.clone(),)*},
         ];
 
         quote!{
             pub struct #builder_ident {
-                #(#builder_fields_def),*
+                #(#builder_fields_def)*
             }
     
             impl #ident {
                 pub fn builder() -> #builder_ident {
                     #builder_ident { 
-                        #(#builder_create_def),*
+                        #(#builder_create_def)*
                      }
                 }
             }
@@ -154,7 +154,7 @@ fn add_builder_type(ident : &Ident, data : &Data) -> TokenStream {
             impl #builder_ident {
                 pub fn build(&self) -> Result<#ident, Box<dyn std::error::Error>> {
                     Ok(#ident{
-                        #(#builder_build_def),*                        
+                        #(#builder_build_def)*                        
                     })
                 }
 
