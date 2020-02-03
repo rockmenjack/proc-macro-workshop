@@ -55,9 +55,10 @@ use std::marker::PhantomData;
 type S = String;
 
 #[derive(CustomDebug)]
-pub struct Field<T> {
+pub struct Field<T, U> {
     marker: PhantomData<T>,
     string: S,
+    somehing: U,
     #[debug = "0b{:08b}"]
     bitmask: u8,
 }
@@ -69,5 +70,5 @@ fn main() {
     struct NotDebug;
 
     assert_debug::<PhantomData<NotDebug>>();
-    assert_debug::<Field<NotDebug>>();
+    assert_debug::<Field<NotDebug, String>>();
 }
