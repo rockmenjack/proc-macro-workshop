@@ -1,7 +1,7 @@
 extern crate proc_macro;
 
 use proc_macro2::{TokenStream};
-use syn::{parse_macro_input, DeriveInput, Data, DataStruct, Fields,Attribute, Meta, MetaNameValue, Lit};
+use syn::{parse_macro_input, parse_quote, DeriveInput, Data, DataStruct, Fields,Attribute, Meta, MetaNameValue, Lit, Generics, GenericParam};
 use quote::{quote};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -50,12 +50,23 @@ fn fields_debug_definition(data : &Data) -> Vec<TokenStream> {
     Vec::new()
 }
 
+fn append_trait_bounds(mut generics : Generics) -> Generics {
+    for param in &mut generics.params {
+        if let GenericParam::Type(ref mut type_param) = *param {
+            type_param.bounds.push(parse_quote!(std::fmt::Debug));
+        }
+    }
+    generics
+}
+
 fn add_debug_impl(input : DeriveInput) -> TokenStream {
     let struct_name = &input.ident;
     let struct_fields_format = fields_debug_definition(&input.data);
+    let generics = append_trait_bounds(input.generics);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     
     quote!{
-        impl std::fmt::Debug for #struct_name {
+        impl #impl_generics std::fmt::Debug for #struct_name #ty_generics #where_clause {
             fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
                 fmt.debug_struct(stringify!(#struct_name))
                 #(#struct_fields_format)*
