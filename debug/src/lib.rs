@@ -2,7 +2,7 @@ extern crate proc_macro;
 
 use std::collections::HashSet;
 use proc_macro2::{TokenStream};
-use syn::{parse_macro_input, parse_quote, DeriveInput, Data, Type, Ident, PathSegment, PathArguments, DataStruct, Fields, FieldsNamed, Attribute, Meta, MetaNameValue, Lit, Generics, GenericParam};
+use syn::{parse_macro_input, parse_quote, DeriveInput, Data, Path, Type, Ident,TypePath, PathSegment, PathArguments, DataStruct, Fields, FieldsNamed, Attribute, Meta, MetaNameValue, Lit, Generics};
 use quote::{quote};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -47,18 +47,48 @@ fn fields_debug_definition(fields : &FieldsNamed) -> Vec<TokenStream> {
             }).collect()
 }
 
-fn list_phantomed_types<'a>(fields : &'a FieldsNamed) -> HashSet<&'a Ident> {
-    let mut skip_types = HashSet::new();
+struct SpecialParams<'a> {
+    skipped_params : HashSet<&'a Ident>,
+    associated : Vec<&'a Path>,
+}
 
-    let mut extract_type = |path_args: &'a PathArguments| {
+fn list_special_types<'a>(fields : &'a FieldsNamed, type_param_names : HashSet<&Ident>) -> SpecialParams<'a> {
+    let mut special_types = SpecialParams{skipped_params : HashSet::new(), associated : Vec::new()};
+
+    let iter_phantomed_params = |path_args: &'a PathArguments| {
         if let PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments{args,..}) = path_args {
-            if let Some(syn::GenericArgument::Type(Type::Path(type_path))) = args.first() {
-                if let Some(ident) = type_path.path.get_ident() {
-                    skip_types.insert(ident);
-                }                
-            }
-        }
+            let iter = args.iter().filter_map(|arg|{
+                if let syn::GenericArgument::Type(Type::Path(TypePath{path,..})) = arg {
+                    if let Some(ident) = path.get_ident() {
+                        return Some(ident);
+                    }
+                }
+                return None;
+            });
+            
+            return Some(iter);
+        } else { None }
     };
+
+    let iter_associated_params = |path_args: &'a PathArguments| {
+        if let PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments{args,..}) = path_args {
+            let iter = args.iter().filter_map(|arg|{
+                if let syn::GenericArgument::Type(Type::Path(TypePath{path,..})) = &arg {
+                    if path.segments.len() > 1 {
+                        if let Some(path_seg) = path.segments.first() {
+                            if type_param_names.contains(&path_seg.ident) {
+                                return Some((&path_seg.ident, path));
+                            }
+                        }
+                    }
+                }
+                return None;
+            });
+            
+            return Some(iter);
+        } else { None }
+    };
+
 
     for field in fields.named.iter() {
         if let Type::Path(type_path) = &field.ty {
@@ -67,49 +97,72 @@ fn list_phantomed_types<'a>(fields : &'a FieldsNamed) -> HashSet<&'a Ident> {
                     if (first.ident == "std" || first.ident == "core")
                        && second.ident == "marker"
                        && third.ident == "PhantomData" {
-                        extract_type(&third.arguments);
+                           if let Some(idents) = iter_phantomed_params(&third.arguments) {
+                               idents.for_each(|i| {special_types.skipped_params.insert(i);});
+                           }
                     }
                 },
                 [first] => {
-                    if first.ident == "PhantomData" {
-                        extract_type(&first.arguments);
-                    }
+                    eprintln!("checking: {}", quote!{#first});
+                        if first.ident == "PhantomData" {
+                            if let Some(idents) = iter_phantomed_params(&first.arguments) {
+                                idents.for_each(|i| {special_types.skipped_params.insert(i);});
+                            }
+                        } else {
+                            if let Some(idents_paths) = iter_associated_params(&first.arguments) {
+                                for (ident, path) in idents_paths {
+                                    special_types.skipped_params.insert(ident);
+                                    special_types.associated.push(path);
+                                }
+                            }
+                        }
                 },
-                _ => (),
+                _ => {},
             }
         }
     }
 
-    return skip_types;
+    return special_types;
 }
 
-fn append_trait_bounds(skip_types : &Option<HashSet<&Ident>>, mut generics : Generics) -> Generics {
-    for param in &mut generics.params {
-        if let GenericParam::Type(ref mut type_param) = *param {
-            if let Some(skip_types) = skip_types {
-                if skip_types.contains(&type_param.ident) {
-                    continue;
-                }
-            }
-            type_param.bounds.push(parse_quote!(std::fmt::Debug));
-            }
-        }
-    generics
-}
-
-fn add_debug_impl(input : DeriveInput) -> TokenStream {
-    let struct_name = &input.ident;
-
-    let (struct_fields_format, skip_types) =
-    if let Data::Struct(DataStruct{fields: Fields::Named(fields), ..}) = &input.data {
-        (fields_debug_definition(fields), Some(list_phantomed_types(fields)))
-    } else {
-        (Vec::new(), None)
+fn append_trait_bounds(generics : &mut Generics, fields : &FieldsNamed) {
+    let special_types = {
+        let param_names : HashSet<&Ident> = generics.type_params()
+            .map(|type_param| &type_param.ident)
+            .collect();
+        
+        list_special_types(fields, param_names)
     };
     
     
-    let generics = append_trait_bounds(&skip_types, input.generics);
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    for type_param in generics.type_params_mut() {
+        if !special_types.skipped_params.contains(&type_param.ident) {
+            type_param.bounds.push(parse_quote!(std::fmt::Debug));
+        }
+    }
+
+    if special_types.associated.len() > 0 {
+        let where_clause = generics.make_where_clause();
+        for ty in special_types.associated {
+            let token = quote!{#ty};
+            where_clause.predicates.push(parse_quote!{#token : std::fmt::Debug});
+        }
+    }
+}
+
+fn add_debug_impl(mut input : DeriveInput) -> TokenStream {
+    let struct_name = &input.ident;
+
+    let struct_fields_format;
+    if let Data::Struct(DataStruct{fields: Fields::Named(fields), ..}) = &input.data {
+        struct_fields_format = fields_debug_definition(fields);
+        append_trait_bounds(&mut input.generics, fields);
+    } else {
+        struct_fields_format = Vec::new();
+    }
+    
+    
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     
     quote!{
         impl #impl_generics std::fmt::Debug for #struct_name #ty_generics #where_clause {
