@@ -35,7 +35,7 @@ pub trait Trait {
 }
 
 #[derive(CustomDebug)]
-#[debug(bound = "T::Value: Debug")]
+#[debug(bound = "T::Value: std::fmt::Debug")]
 pub struct Wrapper<T: Trait> {
     field: Field<T>,
 }

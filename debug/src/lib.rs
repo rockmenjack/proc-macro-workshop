@@ -1,8 +1,9 @@
 extern crate proc_macro;
 
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::{HashSet};
 use proc_macro2::{TokenStream};
-use syn::{parse_macro_input, parse_quote, DeriveInput, Data, Path, Type, Ident,TypePath, PathSegment, PathArguments, DataStruct, Fields, FieldsNamed, Attribute, Meta, MetaNameValue, Lit, Generics};
+use syn::{parse_macro_input, parse_quote, DeriveInput, Data, Path, LitStr, Type, Field, Ident,TypePath, PathSegment, PathArguments, DataStruct, Fields, FieldsNamed, Attribute, Meta, MetaNameValue, Lit, Generics, WherePredicate, PredicateType};
 use quote::{quote};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -15,53 +16,75 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     token_stream.into()
 }
 
-fn fields_debug_definition(fields : &FieldsNamed) -> Vec<TokenStream> {
-        let extract_format = |attrs : &Vec<Attribute>| {
-            attrs.iter().find_map(|attr| {
-                if let Ok(Meta::NameValue(MetaNameValue{path, lit: Lit::Str(lit), ..})) = attr.parse_meta() {
-                    if path.is_ident("debug") {
-                        return Some(lit.value())
-                    }
+fn extract_debug_attributes(attrs : &Vec<Attribute>, name : &str) -> Vec<LitStr> {
+    
+    attrs.iter().filter_map(|attr| {
+        if attr.path.is_ident("debug") {
+            if let Ok(Meta::NameValue(MetaNameValue{path, lit: Lit::Str(lit), ..})) = attr.parse_args() {
+                if path.is_ident(name) {
+                    return Some(lit);
                 }
-                None
-            })
+            }
+        }
+
+        return None;
+    }).collect()
+}
+
+fn get_field_call(field : &Field) -> Option<TokenStream> {
+    if let Some(ident) = &field.ident {
+        let token = if let Some(custom_formatter) = extract_debug_attributes(&field.attrs, "format").pop() {
+            quote!{
+                .field(stringify!(#ident), &format_args!(#custom_formatter, self.#ident))
+            }
+        } else {
+            quote!{
+                .field(stringify!(#ident), &self.#ident)
+            }
         };
 
-        return fields.named.iter()
-            .filter_map(|f| {
-                if let Some(ident) = &f.ident {
-                    let tokens = if let Some(custom_formatter) = extract_format(&f.attrs) {
-                        quote!{
-                            .field(stringify!(#ident), &format_args!(#custom_formatter, self.#ident))
-                        }
-                    } else {
-                        quote!{
-                            .field(stringify!(#ident), &self.#ident)
-                        }
-                    };
+        return Some(token);
+    }
 
-                    Some(tokens)
-                } else {
-                    None
-                }
-            }).collect()
+    return None;
 }
 
 struct SpecialParams<'a> {
-    skipped_params : HashSet<&'a Ident>,
-    associated : Vec<&'a Path>,
+    should_skip : HashSet<Cow<'a, Ident>>,
+    where_predicates : Vec<WherePredicate>,
+}
+
+fn where_predicate_from_lit(lit : &LitStr) -> Option<(Ident,WherePredicate)> {
+    if let Ok(predicate) = lit.parse() {
+        if let WherePredicate::Type(PredicateType{bounded_ty:Type::Path(TypePath{path,..}),..}) = &predicate {
+            if let Some(ident) = first_path_segment(&path) {
+                return Some((ident.clone(), predicate));
+            }
+        }
+    }
+
+    return None;
+}
+
+fn first_path_segment(path : &Path) -> Option<&Ident> {
+    if path.segments.len() == 1 {
+            return path.get_ident();
+        } else {
+            if let Some(segment) = path.segments.first() {
+                return Some(&segment.ident);
+            };
+        }
+    return None;
 }
 
 fn list_special_types<'a>(fields : &'a FieldsNamed, type_param_names : HashSet<&Ident>) -> SpecialParams<'a> {
-    let mut special_types = SpecialParams{skipped_params : HashSet::new(), associated : Vec::new()};
+    let mut special_types = SpecialParams{should_skip : HashSet::new(), where_predicates : Vec::new()};
 
     let iter_phantomed_params = |path_args: &'a PathArguments| {
         if let PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments{args,..}) = path_args {
             let iter = args.iter().filter_map(|arg|{
                 if let syn::GenericArgument::Type(Type::Path(TypePath{path,..})) = arg {
-                    if let Some(ident) = path.get_ident() {
-                        return Some(ident);
-                    }
+                    return first_path_segment(path);
                 }
                 return None;
             });
@@ -75,9 +98,9 @@ fn list_special_types<'a>(fields : &'a FieldsNamed, type_param_names : HashSet<&
             let iter = args.iter().filter_map(|arg|{
                 if let syn::GenericArgument::Type(Type::Path(TypePath{path,..})) = &arg {
                     if path.segments.len() > 1 {
-                        if let Some(path_seg) = path.segments.first() {
-                            if type_param_names.contains(&path_seg.ident) {
-                                return Some((&path_seg.ident, path));
+                        if let Some(ident) = first_path_segment(path) {
+                            if type_param_names.contains(&ident) {
+                                return Some((ident, path));
                             }
                         }
                     }
@@ -89,7 +112,6 @@ fn list_special_types<'a>(fields : &'a FieldsNamed, type_param_names : HashSet<&
         } else { None }
     };
 
-
     for field in fields.named.iter() {
         if let Type::Path(type_path) = &field.ty {
             match type_path.path.segments.iter().collect::<Vec<&PathSegment>>().as_slice() {
@@ -98,21 +120,32 @@ fn list_special_types<'a>(fields : &'a FieldsNamed, type_param_names : HashSet<&
                        && second.ident == "marker"
                        && third.ident == "PhantomData" {
                            if let Some(idents) = iter_phantomed_params(&third.arguments) {
-                               idents.for_each(|i| {special_types.skipped_params.insert(i);});
+                               idents.for_each(|i| {special_types.should_skip.insert(Cow::Borrowed(i));});
                            }
                     }
                 },
                 [first] => {
-                    eprintln!("checking: {}", quote!{#first});
                         if first.ident == "PhantomData" {
                             if let Some(idents) = iter_phantomed_params(&first.arguments) {
-                                idents.for_each(|i| {special_types.skipped_params.insert(i);});
+                                idents.for_each(|i| {special_types.should_skip.insert(Cow::Borrowed(i));});
                             }
                         } else {
-                            if let Some(idents_paths) = iter_associated_params(&first.arguments) {
-                                for (ident, path) in idents_paths {
-                                    special_types.skipped_params.insert(ident);
-                                    special_types.associated.push(path);
+                            let attributed_bounds = extract_debug_attributes(&field.attrs, "bound");
+                            if attributed_bounds.len() > 0 {
+                                for bound in attributed_bounds.iter() {
+                                    eprintln!("bound: {}", bound.value());
+                                    if let Some((ident, predicate)) = where_predicate_from_lit(bound) {
+                                        special_types.should_skip.insert(Cow::Owned(ident));
+                                        special_types.where_predicates.push(predicate);
+                                    }
+                                }
+                            } else {                           
+                                if let Some(idents_paths) = iter_associated_params(&first.arguments) {
+                                    for (ident, path) in idents_paths {
+                                        let ty = quote!{#path};
+                                        special_types.should_skip.insert(Cow::Borrowed(ident));
+                                        special_types.where_predicates.push(parse_quote!{#ty : std::fmt::Debug});
+                                    }
                                 }
                             }
                         }
@@ -125,50 +158,57 @@ fn list_special_types<'a>(fields : &'a FieldsNamed, type_param_names : HashSet<&
     return special_types;
 }
 
-fn append_trait_bounds(generics : &mut Generics, fields : &FieldsNamed) {
-    let special_types = {
+fn append_trait_bounds(generics : &mut Generics, struct_bound_attributes: Vec<LitStr>, fields : &FieldsNamed) {
+    let mut special_types = {
         let param_names : HashSet<&Ident> = generics.type_params()
             .map(|type_param| &type_param.ident)
             .collect();
         
         list_special_types(fields, param_names)
     };
-    
+
+    for bound in struct_bound_attributes.iter() {
+        if let Some((ident, predicate)) = where_predicate_from_lit(bound) {
+            special_types.should_skip.insert(Cow::Owned(ident));
+            special_types.where_predicates.push(predicate);
+        }
+    }
     
     for type_param in generics.type_params_mut() {
-        if !special_types.skipped_params.contains(&type_param.ident) {
+        if !special_types.should_skip.contains(&type_param.ident) {
             type_param.bounds.push(parse_quote!(std::fmt::Debug));
         }
     }
 
-    if special_types.associated.len() > 0 {
+    if special_types.where_predicates.len() > 0 {
         let where_clause = generics.make_where_clause();
-        for ty in special_types.associated {
-            let token = quote!{#ty};
-            where_clause.predicates.push(parse_quote!{#token : std::fmt::Debug});
+        for predicate in special_types.where_predicates {
+            where_clause.predicates.push(predicate);
         }
     }
 }
 
 fn add_debug_impl(mut input : DeriveInput) -> TokenStream {
-    let struct_name = &input.ident;
-
-    let struct_fields_format;
+    
+    let  mut struct_field_calls = Vec::new();
     if let Data::Struct(DataStruct{fields: Fields::Named(fields), ..}) = &input.data {
-        struct_fields_format = fields_debug_definition(fields);
-        append_trait_bounds(&mut input.generics, fields);
-    } else {
-        struct_fields_format = Vec::new();
+        let struct_debug_attributes = extract_debug_attributes(&input.attrs, "bound");
+        append_trait_bounds(&mut input.generics, struct_debug_attributes,fields);
+        for field in fields.named.iter() {
+            if let Some(call) = get_field_call(field) {
+                struct_field_calls.push(call);
+            }
+        }
     }
     
-    
+    let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     
     quote!{
         impl #impl_generics std::fmt::Debug for #struct_name #ty_generics #where_clause {
             fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
                 fmt.debug_struct(stringify!(#struct_name))
-                #(#struct_fields_format)*
+                #(#struct_field_calls)*
                 .finish()
             }
         }
