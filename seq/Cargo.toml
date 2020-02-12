@@ -17,5 +17,5 @@ trybuild = "1.0"
 
 [dependencies]
 proc-macro2 = "1"
-syn = "1"
+syn = { version = "1", features = ["full", "visit-mut"] }
 quote = "1"

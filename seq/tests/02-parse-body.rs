@@ -24,7 +24,7 @@ macro_rules! expand_to_nothing {
     };
 }
 
-seq!(N in 0..4 {
+seq!(N in 0..1 {
     expand_to_nothing!(N);
 });
 
