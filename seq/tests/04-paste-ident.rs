@@ -23,7 +23,7 @@
 use seq::seq;
 
 seq!(N in 1..4 {
-    fn f#N () -> u64 {
+    fn f#N# () -> u64 {
         N * 2
     }
 });
